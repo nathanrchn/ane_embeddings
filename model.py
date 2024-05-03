@@ -51,16 +51,16 @@ class Attention(nn.Module):
         self.q_proj = nn.Conv2d(hidden_size, hidden_size, 1, bias=True, dtype=torch.float16)
         self.k_proj = nn.Conv2d(hidden_size, hidden_size, 1, bias=True, dtype=torch.float16)
         self.v_proj = nn.Conv2d(hidden_size, hidden_size, 1, bias=True, dtype=torch.float16)
-        self.o_proj = nn.Conv2d(hidden_size, hidden_size, 1, bias=False, dtype=torch.float16)
+        self.o_proj = nn.Conv2d(hidden_size, hidden_size, 1, bias=True, dtype=torch.float16)
 
     def forward(self, hidden_states: Tensor) -> Tensor:
         query_state = torch.reshape(self.q_proj(hidden_states), (batch_size, head_dim, num_heads, seq_len))
         key_state = torch.reshape(self.k_proj(hidden_states), (batch_size, head_dim, num_heads, seq_len))
         value_state = torch.reshape(self.v_proj(hidden_states), (batch_size, head_dim, num_heads, seq_len))
         
-        query_states = torch.split(query_state, 1, dim=2)
-        key_states = torch.split(torch.transpose(key_state, 1, 3), 1, dim=2)
-        value_states = torch.split(value_state, 1, dim=2)
+        query_states = torch.split(query_state, 1, dim=1)
+        key_states = torch.split(torch.transpose(key_state, 1, 3), 1, dim=3)
+        value_states = torch.split(value_state, 1, dim=1)
 
         weights = [torch.einsum("bchq,bkhc->bkhq", [qi, ki]) * float(head_dim) ** -0.5 for qi, ki in zip(query_states, key_states)]
         weights = [torch.softmax(w + mask, dim=1, dtype=torch.float32) for w in weights]
@@ -89,7 +89,7 @@ class EncoderLayer(nn.Module):
 
     def forward(self, hidden_states: Tensor) -> Tensor:
         hidden_states += self.attention(hidden_states)
-        hidden_states += self.mlp(self.post_attention_layernorm(hidden_states))
+        # hidden_states += self.mlp(self.post_attention_layernorm(hidden_states))
         return self.post_mlp_layernorm(hidden_states)
     
 class Model(nn.Module):
@@ -111,7 +111,12 @@ model = Model().to(torch.float16).to("mps").eval()
 print(f"number of parameters {sum(p.numel() for p in model.parameters()):,d}")
 
 with torch.no_grad():
-    traced_model = torch.jit.trace(model, (torch.randint(0, vocab_size, (batch_size, seq_len), device="mps")))
+    traced_model = torch.jit.trace(
+        model,
+        (
+            torch.randint(0, vocab_size, (batch_size, seq_len), device="mps")
+        )
+    )
 
 coreml_model = ct.convert(
     traced_model,
