@@ -4,7 +4,7 @@ import coremltools as ct
 from torch import nn, Tensor
 from torch.nn import functional as F
 
-seq_len = 384
+seq_len = 512
 num_heads = 12
 num_layers = 6
 batch_size = 8
@@ -58,14 +58,14 @@ class Attention(nn.Module):
         key_state = torch.reshape(self.k_proj(hidden_states), (batch_size, head_dim, num_heads, seq_len))
         value_state = torch.reshape(self.v_proj(hidden_states), (batch_size, head_dim, num_heads, seq_len))
         
-        query_states = torch.split(query_state, 1, dim=1)
-        key_states = torch.split(torch.transpose(key_state, 1, 3), 1, dim=3)
-        value_states = torch.split(value_state, 1, dim=1)
+        query_states = torch.split(query_state, 1, dim=2)
+        key_states = torch.split(torch.transpose(key_state, 1, 3), 1, dim=2)
+        value_states = torch.split(value_state, 1, dim=2)
 
-        weights = [torch.einsum("bchq,bkhc->bkhq", [qi, ki]) * float(head_dim) ** -0.5 for qi, ki in zip(query_states, key_states)]
+        weights = [torch.einsum("bchq,bkhc->bkhq", (qi, ki)) * float(head_dim) ** -0.5 for qi, ki in zip(query_states, key_states)]
         weights = [torch.softmax(w + mask, dim=1, dtype=torch.float32) for w in weights]
 
-        attn = [torch.einsum("bkhq,bchk->bchq", [wi, vi]) for wi, vi in zip(weights, value_states)]
+        attn = [torch.einsum("bkhq,bchk->bchq", (wi, vi)) for wi, vi in zip(weights, value_states)]
         attn = torch.cat(attn, dim=1).to(torch.float16)
 
         return self.o_proj(attn)
@@ -89,7 +89,8 @@ class EncoderLayer(nn.Module):
 
     def forward(self, hidden_states: Tensor) -> Tensor:
         hidden_states += self.attention(hidden_states)
-        # hidden_states += self.mlp(self.post_attention_layernorm(hidden_states))
+        hidden_states = self.post_attention_layernorm(hidden_states)
+        hidden_states += self.mlp(hidden_states)
         return self.post_mlp_layernorm(hidden_states)
     
 class Model(nn.Module):
