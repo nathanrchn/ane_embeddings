@@ -7,9 +7,10 @@ from torch.nn import functional as F
 seq_len = 512
 num_heads = 12
 num_layers = 6
-batch_size = 8
-hidden_size = 768
-vocab_size = 50265
+batch_size = 2
+hidden_size = 384 # 768
+vocab_size = 30522
+layer_norm_eps = 1e-12
 intermediate_size = hidden_size * 4
 head_dim = hidden_size // num_heads
 
@@ -24,7 +25,7 @@ class LayerNorm(nn.Module):
     def forward(self, x: Tensor) -> Tensor:
         mean = x.mean(1, keepdim=True)
         zero_mean = x - mean
-        denom = (zero_mean.pow(2).mean(1, keepdim=True) + 1e-05).rsqrt()
+        denom = (zero_mean.pow(2).mean(1, keepdim=True) + layer_norm_eps).rsqrt()
         return (zero_mean * denom * self.weight + self.bias).to(torch.float16)
 
 class Embedding(nn.Module):
@@ -53,22 +54,24 @@ class Attention(nn.Module):
         self.v_proj = nn.Conv2d(hidden_size, hidden_size, 1, bias=True, dtype=torch.float16)
         self.o_proj = nn.Conv2d(hidden_size, hidden_size, 1, bias=True, dtype=torch.float16)
 
-    def forward(self, hidden_states: Tensor) -> Tensor:
-        query_state = torch.reshape(self.q_proj(hidden_states), (batch_size, head_dim, num_heads, seq_len))
-        key_state = torch.reshape(self.k_proj(hidden_states), (batch_size, head_dim, num_heads, seq_len))
-        value_state = torch.reshape(self.v_proj(hidden_states), (batch_size, head_dim, num_heads, seq_len))
+    def forward(self, hidden_state: Tensor) -> Tensor:
+        hidden_states = torch.split(hidden_state, 1, dim=0)
+        query_state = [torch.reshape(self.q_proj(hs), (1, head_dim, num_heads, seq_len)) for hs in hidden_states]
+        key_state = [torch.reshape(self.k_proj(hs), (1, head_dim, num_heads, seq_len)) for hs in hidden_states]
+        value_state = [torch.reshape(self.v_proj(hs), (1, head_dim, num_heads, seq_len)) for hs in hidden_states]
         
-        query_states = torch.split(query_state, 1, dim=2)
-        key_states = torch.split(torch.transpose(key_state, 1, 3), 1, dim=2)
-        value_states = torch.split(value_state, 1, dim=2)
+        query_states = [torch.split(qs, 1, dim=2) for qs in query_state]
+        key_states = [torch.split(torch.transpose(ks, 1, 3), 1, dim=2) for ks in key_state]
+        value_states = [torch.split(vs, 1, dim=2) for vs in value_state]
 
-        weights = [torch.einsum("bchq,bkhc->bkhq", (qi, ki)) * float(head_dim) ** -0.5 for qi, ki in zip(query_states, key_states)]
-        weights = [torch.softmax(w + mask, dim=1, dtype=torch.float32) for w in weights]
+        weights = [[torch.einsum("bchq,bkhc->bkhq", (qi, ki)) * float(head_dim) ** -0.5 for qi, ki in zip(qs, ks)] for qs, ks in zip(query_states, key_states)]
+        weights = [[torch.softmax(w + mask, dim=1, dtype=torch.float32) for w in wi] for wi in weights]
 
-        attn = [torch.einsum("bkhq,bchk->bchq", (wi, vi)) for wi, vi in zip(weights, value_states)]
-        attn = torch.cat(attn, dim=1).to(torch.float16)
+        attn = [[torch.einsum("bkhq,bchk->bchq", [wi, vi]) for wi, vi in zip(w, vs)] for w, vs in zip(weights, value_states)]
+        attn = [torch.cat(a, dim=1).to(torch.float16) for a in attn]
 
-        return self.o_proj(attn)
+        outputs = [self.o_proj(a) for a in attn]
+        return torch.cat(outputs, dim=0)
     
 class MLP(nn.Module):
     def __init__(self) -> None:
@@ -106,7 +109,8 @@ class Model(nn.Module):
         for layer in self.layers:
             hidden_states = layer(hidden_states)
         
-        return torch.reshape(F.tanh(self.dense(hidden_states[:, :, :, :1])), (batch_size, hidden_size))
+        hidden_states = F.tanh(self.dense(hidden_states[:, :, :, :1]))
+        return hidden_states
     
 model = Model().to(torch.float16).to("mps").eval()
 print(f"number of parameters {sum(p.numel() for p in model.parameters()):,d}")
