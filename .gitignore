@@ -1,3 +1,5 @@
 .DS_Store
 model.safetensors
 AneEmbeddings.mlpackage
+AneEmbeddings
+__pycache__
