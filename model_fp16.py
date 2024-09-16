@@ -24,26 +24,20 @@ head_dim = hidden_size // num_heads
 class LayerNorm(nn.Module):
     def __init__(self, hidden_size: int) -> None:
         super().__init__()
-        self.weight = nn.Parameter(torch.ones(1, hidden_size, 1, 1, dtype=torch.float16))
-        self.bias = nn.Parameter(torch.zeros(1, hidden_size, 1, 1, dtype=torch.float16))
+        self.weight = nn.Parameter(torch.ones(1, hidden_size, 1, 1))
+        self.bias = nn.Parameter(torch.zeros(1, hidden_size, 1, 1))
 
     def forward(self, x: Tensor) -> Tensor:
-        # x = x.clamp(-250, 250) # for numerical stability
-        # mean = x.mean(1, keepdim=True)
-        # zero_mean = x - mean
-        # denom = (zero_mean.pow(2).mean(1, keepdim=True) + layer_norm_eps).rsqrt()
-        # return (zero_mean * denom * self.weight + self.bias).to(torch.float16)
-
         x = x.transpose(1, 3)
         o = F.layer_norm(x, (hidden_size,), self.weight.view(-1), self.bias.view(-1), layer_norm_eps)
-        return o.transpose(1, 3) # .to(torch.float16)
+        return o.transpose(1, 3)
 
 class Embedding(nn.Module):
     def __init__(self) -> None:
         super().__init__()
-        self.word_embeddings = nn.Embedding(vocab_size, hidden_size, dtype=torch.float16)
-        self.position_embeddings = nn.Embedding(seq_len, hidden_size, dtype=torch.float16)
-        self.token_type_embeddings = nn.Embedding(seq_len, hidden_size, dtype=torch.float16)
+        self.word_embeddings = nn.Embedding(vocab_size, hidden_size)
+        self.position_embeddings = nn.Embedding(seq_len, hidden_size)
+        self.token_type_embeddings = nn.Embedding(seq_len, hidden_size)
         self.layer_norm = LayerNorm(hidden_size)
 
     def forward(self, input_ids: Tensor) -> Tensor:
@@ -59,10 +53,10 @@ class Embedding(nn.Module):
 class Attention(nn.Module):
     def __init__(self) -> None:
         super().__init__()
-        self.q_proj = nn.Conv2d(hidden_size, hidden_size, 1, bias=True, dtype=torch.float16)
-        self.k_proj = nn.Conv2d(hidden_size, hidden_size, 1, bias=True, dtype=torch.float16)
-        self.v_proj = nn.Conv2d(hidden_size, hidden_size, 1, bias=True, dtype=torch.float16)
-        self.o_proj = nn.Conv2d(hidden_size, hidden_size, 1, bias=True, dtype=torch.float16)
+        self.q_proj = nn.Conv2d(hidden_size, hidden_size, 1, bias=True)
+        self.k_proj = nn.Conv2d(hidden_size, hidden_size, 1, bias=True)
+        self.o_proj = nn.Conv2d(hidden_size, hidden_size, 1, bias=True)
+        self.v_proj = nn.Conv2d(hidden_size, hidden_size, 1, bias=True)
 
     def forward(self, hidden_state: Tensor, mask: Tensor) -> Tensor:
         masks = torch.split(mask, batch_slice, dim=0)
@@ -79,7 +73,7 @@ class Attention(nn.Module):
         weights = [[F.softmax(w + m, dim=1) for w in wi] for wi, m in zip(weights, masks)]
 
         attn = [[torch.einsum("bkhq,bchk->bchq", [wi, vi]) for wi, vi in zip(w, vs)] for w, vs in zip(weights, value_states)]
-        attn = [torch.cat(a, dim=1).to(torch.float16) for a in attn]
+        attn = [torch.cat(a, dim=1) for a in attn]
 
         outputs = [self.o_proj(a) for a in attn]
         output = torch.cat(outputs, dim=0)
@@ -88,8 +82,8 @@ class Attention(nn.Module):
 class MLP(nn.Module):
     def __init__(self) -> None:
         super().__init__()
-        self.fc1 = nn.Conv2d(hidden_size, intermediate_size, 1, dtype=torch.float16)
-        self.fc2 = nn.Conv2d(intermediate_size, hidden_size, 1, dtype=torch.float16)
+        self.fc1 = nn.Conv2d(hidden_size, intermediate_size, 1)
+        self.fc2 = nn.Conv2d(intermediate_size, hidden_size, 1)
         
     def forward(self, hidden_states: Tensor) -> Tensor:
         return self.fc2(F.gelu(self.fc1(hidden_states)))
@@ -121,9 +115,9 @@ class Model(nn.Module):
         for layer in self.layers:
             hidden_states = layer(hidden_states, mask)
 
-        return F.normalize(hidden_states[:, :, 0, 0].to(torch.float32), p=2, dim=1)
+        return F.normalize(hidden_states[:, :, 0, 0], p=2, dim=1)
     
-model = Model().to(torch.float16).to("mps").eval()
+model = Model().to("mps").eval()
 
 model.load_state_dict(load_model(url, num_layers))
 
@@ -146,7 +140,7 @@ with torch.no_grad():
         model,
         (
             torch.randint(0, vocab_size, (batch_size, seq_len), device="mps"),
-            torch.zeros((batch_size, seq_len), device="mps", dtype=torch.float16)
+            torch.zeros((batch_size, seq_len), device="mps", )
         )
     )
 
